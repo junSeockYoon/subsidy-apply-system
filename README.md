@@ -759,3 +759,37 @@ npm run loadtest:good:smoke
 npm run loadtest:reset
 npm run loadtest:bad:smoke
 ```
+
+---
+
+## Frontend — 데모 UI
+
+브라우저에서 신청·관리자 기능을 테스트할 수 있는 React 프론트엔드입니다.
+
+### 페이지
+
+| 경로 | 설명 |
+|------|------|
+| `http://localhost:5173/` | 이용자 신청 + 동시 접속 시뮬레이션 |
+| `http://localhost:5173/admin` | 관리자 대시보드 |
+
+### 실행 (터미널 3개)
+
+```bash
+npm run dev:api        # API (:3000)
+npm run dev:worker     # Worker (엑셀용)
+npm run dev:frontend   # Frontend (:5173) — 최초: cd frontend && npm install
+```
+
+### 이용자 페이지
+
+- Good/Bad API 선택 신청
+- 동시 접속 시뮬레이션 (최대 2,000건)
+- Good vs Bad 성능 비교
+
+### 관리자 페이지
+
+- 실시간 쿼터·신청 통계
+- 테스트 데이터 시드 (1천 / 1만 / 5만 건)
+- 대용량 엑셀 생성 + 다운로드
+- 환경 초기화
