@@ -39,7 +39,7 @@ Node.js 기반 고트래픽 선착순 처리 + 대용량 엑셀 스트리밍 다
 | **Step 1** | 디렉터리 구조 + 패키지 + 인프라 설정 | ✅ 완료 |
 | **Step 2** | Express 보일러플레이트 + MySQL/Redis 연결 | ✅ 완료 |
 | **Step 3** | Flow 1 — 선착순 API (good/bad 비교) | ✅ 완료 |
-| **Step 4** | Flow 2 — BullMQ + 엑셀 스트리밍 워커 | ⏳ 대기 |
+| **Step 4** | Flow 2 — BullMQ + 엑셀 스트리밍 워커 | ✅ 완료 |
 | **Step 5** | k6 부하 테스트 스크립트 | ⏳ 대기 |
 
 ---
@@ -433,13 +433,105 @@ npm run dev:api
 
 ---
 
-## Step 4 — 엑셀 다운로드 (Flow 2) ⏳
+## Step 4 — 엑셀 다운로드 (Flow 2) ✅
 
 ### 목표
 
-- `POST /api/export` — BullMQ에 Job enqueue, 202 Accepted 반환
-- `GET /api/export/:jobId` — 생성 상태 조회 / 다운로드
-- 워커: MySQL Stream → ExcelJS StreamWriter 파이프라인
+- `POST /api/export` — BullMQ에 Job enqueue, **202 Accepted** 즉시 반환
+- `GET /api/export/:jobId` — 생성 상태 조회
+- `GET /api/export/:jobId/download` — 완료 시 파일 다운로드
+- 워커: MySQL Stream → ExcelJS StreamWriter (OOM 방지)
+
+### 아키텍처
+
+```
+관리자 → POST /api/export → API (202 즉시 응답)
+                              ↓
+                         BullMQ (Redis)
+                              ↓
+                    Worker 프로세스
+                    mysql2 Stream 조회
+                              ↓
+                    ExcelJS StreamWriter
+                              ↓
+                    storage/exports/*.xlsx
+```
+
+### API 스펙
+
+**엑셀 생성 요청**
+
+```bash
+curl -X POST http://localhost:3000/api/export \
+  -H 'Content-Type: application/json' \
+  -d '{"programId": 1, "requestedBy": "admin-001"}'
+```
+
+```json
+// 202 Accepted
+{ "jobId": "1", "status": "waiting", "message": "Export job queued" }
+```
+
+**상태 조회**
+
+```bash
+curl http://localhost:3000/api/export/1
+```
+
+```json
+{
+  "jobId": "1",
+  "status": "completed",
+  "result": {
+    "fileName": "export-1-1.xlsx",
+    "filePath": "./storage/exports/export-1-1.xlsx",
+    "rowCount": 101000
+  }
+}
+```
+
+**다운로드**
+
+```bash
+curl -O -J http://localhost:3000/api/export/1/download
+```
+
+### 구현한 파일
+
+| 파일 | 내용 | 성능 포인트 |
+|------|------|-------------|
+| `src/config/bullmq.ts` | BullMQ Redis 연결 | API ioredis와 분리 |
+| `src/services/export/export.service.ts` | Job enqueue·상태 조회 | API는 큐에만 넣고 즉시 반환 |
+| `src/api/routes/export.routes.ts` | export API 라우터 | 202 / 상태 / 다운로드 |
+| `src/worker/worker.ts` | BullMQ Worker 진입점 | API와 프로세스 격리 |
+| `src/worker/processors/export.processor.ts` | Stream 파이프라인 | 행 단위 읽기·쓰기로 OOM 방지 |
+| `scripts/seed.ts` | 더미 데이터 시드 | bulkCreate 배치 삽입 |
+
+### 실행 방법 (터미널 2개 필수)
+
+```bash
+# 터미널 1 — API
+npm run dev:api
+
+# 터미널 2 — Worker
+npm run dev:worker
+```
+
+### 더미 데이터 시드
+
+```bash
+npm run seed           # 10만 건
+npm run seed -- 50000  # 5만 건
+npm run seed -- 100    # 100건 (빠른 테스트)
+```
+
+### OOM 방지 원리
+
+| 나쁜 방식 | Step 4 방식 |
+|-----------|-------------|
+| `SELECT *` 전체 로드 → 메모리 배열 | `mysql2 .stream()` 행 단위 읽기 |
+| 엑셀 전체 메모리 생성 | `WorkbookWriter` 디스크 스트리밍 |
+| API에서 동기 처리 | BullMQ Worker 비동기 처리 |
 
 ---
 
@@ -547,7 +639,8 @@ docker exec -it subsidy-redis redis-cli ping
 | POST | `/api/apply/good` | Redis + Redlock 선착순 (권장) | Step 3 |
 | POST | `/api/apply/bad` | DB 직행 선착순 (비교용) | Step 3 |
 | POST | `/api/export` | 엑셀 생성 요청 (202 Accepted) | Step 4 |
-| GET | `/api/export/:jobId` | 생성 상태 / 다운로드 | Step 4 |
+| GET | `/api/export/:jobId` | 생성 상태 조회 | Step 4 |
+| GET | `/api/export/:jobId/download` | 엑셀 파일 다운로드 | Step 4 |
 
 ---
 

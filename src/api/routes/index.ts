@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { sequelize } from '../../config/database';
 import { pingRedis } from '../../config/redis';
 import applyRoutes from './apply.routes';
+import exportRoutes from './export.routes';
 
 const router = Router();
 
@@ -29,5 +30,6 @@ router.get('/health', async (_req: Request, res: Response) => {
 });
 
 router.use(applyRoutes);
+router.use(exportRoutes);
 
 export default router;

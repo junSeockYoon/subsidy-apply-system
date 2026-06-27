@@ -9,4 +9,10 @@ export interface ExportJobPayload {
   requestedBy: string;
 }
 
+export interface ExportJobResult {
+  fileName: string;
+  filePath: string;
+  rowCount: number;
+}
+
 export type JobStatus = 'waiting' | 'active' | 'completed' | 'failed';
