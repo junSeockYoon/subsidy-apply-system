@@ -40,7 +40,7 @@ Node.js 기반 고트래픽 선착순 처리 + 대용량 엑셀 스트리밍 다
 | **Step 2** | Express 보일러플레이트 + MySQL/Redis 연결 | ✅ 완료 |
 | **Step 3** | Flow 1 — 선착순 API (good/bad 비교) | ✅ 완료 |
 | **Step 4** | Flow 2 — BullMQ + 엑셀 스트리밍 워커 | ✅ 완료 |
-| **Step 5** | k6 부하 테스트 스크립트 | ⏳ 대기 |
+| **Step 5** | k6 부하 테스트 스크립트 | ✅ 완료 |
 
 ---
 
@@ -535,13 +535,103 @@ npm run seed -- 100    # 100건 (빠른 테스트)
 
 ---
 
-## Step 5 — k6 부하 테스트 ⏳
+## Step 5 — k6 부하 테스트 ✅
 
 ### 목표
 
-- `scripts/k6/apply-good.js` — Redis 버전 부하 테스트
-- `scripts/k6/apply-bad.js` — DB 직행 버전 부하 테스트
-- 동시 접속자·응답 시간·성공률 비교 리포트
+- `scripts/k6/apply-good.js` — Redis + Redlock Good API 부하 테스트
+- `scripts/k6/apply-bad.js` — DB 직행 Bad API 부하 테스트
+- 동시 접속자·응답 시간·성공 건수 비교로 Step 3 설계 검증
+
+### 사전 준비
+
+```bash
+# k6 설치 (macOS)
+brew install k6
+
+# 버전 확인
+k6 version
+```
+
+### 부하 테스트 전체 흐름
+
+```bash
+# 1) 인프라 + API 서버 실행
+docker compose up -d
+npm run dev:api
+
+# 2) 테스트 환경 초기화 (쿼터 10,000건 복원)
+npm run loadtest:reset
+
+# 3) Good API 부하 테스트
+npm run loadtest:good:smoke    # 빠른 검증 (~100 VU)
+# npm run loadtest:good         # standard 프로필 (K6_PROFILE=standard)
+
+# 4) 환경 다시 초기화 후 Bad API 비교
+npm run loadtest:reset
+npm run loadtest:bad:smoke
+```
+
+> **Good vs Bad 비교 시** 반드시 `loadtest:reset`으로 초기화한 뒤 각각 실행하세요.
+
+### 프로필 (K6_PROFILE)
+
+| 프로필 | 최대 VU | 용도 |
+|--------|---------|------|
+| `smoke` (기본) | 100 | 로컬 빠른 검증 |
+| `standard` | 5,000 | 중간 부하 비교 |
+| `stress` | 100,000 | 포트폴리오 목표 시나리오 (고사양 PC/클라우드 권장) |
+
+```bash
+K6_PROFILE=standard npm run loadtest:good
+K6_PROFILE=stress npm run loadtest:bad
+```
+
+### 커스텀 메트릭
+
+| 메트릭 | 의미 |
+|--------|------|
+| `apply_success` | 선착순 성공 (201) |
+| `apply_quota_exhausted` | 마감 (409 QUOTA_EXHAUSTED) |
+| `apply_too_busy` | 과부하 거절 (503, good만) |
+| `apply_http_errors` | 기타 HTTP 오류 |
+
+### 결과 파일
+
+테스트 완료 후 JSON 요약이 저장됩니다.
+
+```
+scripts/k6/results/summary-good.json
+scripts/k6/results/summary-bad.json
+```
+
+### good vs bad 예상 비교 (면접용)
+
+| 지표 | good (Redis) | bad (DB 직행) |
+|------|----------------|---------------|
+| p95 응답 시간 | 낮음 | 높음 |
+| `apply_success` | ≤ 10,000 (정합) | 10,000 초과 가능 |
+| `apply_http_errors` | 낮음 | 높음 (커넥션 풀 고갈) |
+| DB 부하 | INSERT 위주 | SELECT+INSERT+UPDATE 폭증 |
+
+### 구현 파일
+
+| 파일 | 내용 |
+|------|------|
+| `scripts/k6/lib.js` | 공통 시나리오·메트릭·요청 헬퍼 |
+| `scripts/k6/apply-good.js` | Good API k6 스크립트 |
+| `scripts/k6/apply-bad.js` | Bad API k6 스크립트 |
+| `scripts/reset-load-test.ts` | 쿼터·Redis·테이블 초기화 |
+
+### npm scripts
+
+```bash
+npm run loadtest:reset        # 테스트 환경 초기화
+npm run loadtest:good:smoke   # Good smoke 테스트
+npm run loadtest:bad:smoke    # Bad smoke 테스트
+npm run loadtest:good         # Good standard 프로필
+npm run loadtest:bad          # Bad standard 프로필
+```
 
 ---
 
@@ -659,6 +749,8 @@ npm run seed          # 더미 데이터 시드 (Step 2 이후)
 ## Load Test (Step 5)
 
 ```bash
-k6 run scripts/k6/apply-good.js
-k6 run scripts/k6/apply-bad.js
+npm run loadtest:reset
+npm run loadtest:good:smoke
+npm run loadtest:reset
+npm run loadtest:bad:smoke
 ```

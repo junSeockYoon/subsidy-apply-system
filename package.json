@@ -11,6 +11,11 @@
     "start:worker": "node dist/worker/worker.js",
     "start:pm2": "pm2 start ecosystem.config.js",
     "seed": "tsx scripts/seed.ts",
+    "loadtest:reset": "tsx scripts/reset-load-test.ts",
+    "loadtest:good": "k6 run scripts/k6/apply-good.js",
+    "loadtest:good:smoke": "K6_PROFILE=smoke k6 run scripts/k6/apply-good.js",
+    "loadtest:bad": "k6 run scripts/k6/apply-bad.js",
+    "loadtest:bad:smoke": "K6_PROFILE=smoke k6 run scripts/k6/apply-bad.js",
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
