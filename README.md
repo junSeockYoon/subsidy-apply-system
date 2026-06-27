@@ -9,6 +9,7 @@ Node.js 기반 고트래픽 선착순 처리 + 대용량 엑셀 스트리밍 다
 | Runtime | Node.js 20+, Express.js, PM2 |
 | Database | MySQL 8 (Sequelize ORM) |
 | Cache & Queue | Redis 7, BullMQ |
+| Frontend | React 19 + Vite (데모 UI) |
 | 부하 테스트 | k6 (Step 5) |
 
 ## Architecture
@@ -731,6 +732,9 @@ docker exec -it subsidy-redis redis-cli ping
 | POST | `/api/export` | 엑셀 생성 요청 (202 Accepted) | Step 4 |
 | GET | `/api/export/:jobId` | 생성 상태 조회 | Step 4 |
 | GET | `/api/export/:jobId/download` | 엑셀 파일 다운로드 | Step 4 |
+| GET | `/api/admin/stats` | 관리자 통계 | Frontend |
+| POST | `/api/admin/reset` | 테스트 환경 초기화 | Frontend |
+| POST | `/api/admin/seed` | 더미 데이터 삽입 | Frontend |
 
 ---
 
@@ -739,6 +743,7 @@ docker exec -it subsidy-redis redis-cli ping
 ```bash
 npm run dev:api       # API 서버 (hot reload)
 npm run dev:worker    # 워커 서버 (hot reload)
+npm run dev:frontend  # 프론트엔드 (Vite, :5173)
 npm run build         # TypeScript → dist/
 npm run start:api     # 프로덕션 API
 npm run start:worker  # 프로덕션 워커

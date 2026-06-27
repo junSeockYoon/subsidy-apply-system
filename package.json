@@ -6,6 +6,7 @@
   "scripts": {
     "dev:api": "tsx watch src/api/server.ts",
     "dev:worker": "tsx watch src/worker/worker.ts",
+    "dev:frontend": "npm run dev --prefix frontend",
     "build": "tsc",
     "start:api": "node dist/api/server.js",
     "start:worker": "node dist/worker/worker.js",
