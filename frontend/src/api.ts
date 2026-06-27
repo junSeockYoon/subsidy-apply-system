@@ -2,6 +2,8 @@ export interface ApplyResponse {
   status: 'success' | 'failed';
   applicationId?: number;
   reason?: string;
+  details?: Record<string, string[] | undefined>;
+  error?: string;
 }
 
 export interface AdminStats {
@@ -25,32 +27,137 @@ export interface ExportJobResponse {
     rowCount: number;
   };
   failedReason?: string;
+  reason?: string;
 }
 
 export type ApiMode = 'good' | 'bad';
+
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly body?: unknown,
+  ) {
+    super(message);
+    this.name = 'ApiRequestError';
+  }
+}
+
+async function parseJsonSafe(res: Response): Promise<unknown> {
+  const text = await res.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { error: text };
+  }
+}
 
 export async function applySubsidy(
   mode: ApiMode,
   body: { userId: string; name: string; phone: string },
 ): Promise<{ status: number; data: ApplyResponse }> {
-  const res = await fetch(`/api/apply/${mode}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = (await res.json()) as ApplyResponse;
+  let res: Response;
+  try {
+    res = await fetch(`/api/apply/${mode}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    throw new ApiRequestError(
+      error instanceof Error ? error.message : 'Network error',
+      0,
+    );
+  }
+
+  const data = (await parseJsonSafe(res)) as ApplyResponse;
   return { status: res.status, data };
 }
 
 export async function fetchAdminStats(): Promise<AdminStats> {
-  const res = await fetch('/api/admin/stats');
-  if (!res.ok) throw new Error('통계 조회 실패');
+  let res: Response;
+  try {
+    res = await fetch('/api/admin/stats');
+  } catch (error) {
+    throw new ApiRequestError(
+      error instanceof Error ? error.message : 'Network error',
+      0,
+    );
+  }
+
+  if (!res.ok) {
+    const body = await parseJsonSafe(res);
+    throw new ApiRequestError('통계 조회 실패', res.status, body);
+  }
+
   return res.json() as Promise<AdminStats>;
+}
+
+export interface AdminApplicationItem {
+  id: number;
+  userId: string;
+  name: string;
+  phone: string;
+  status: string;
+  createdAt: string;
+}
+
+export async function fetchRecentApplications(
+  limit = 20,
+): Promise<AdminApplicationItem[]> {
+  const res = await fetch(`/api/admin/applications?limit=${limit}`);
+  if (!res.ok) {
+    const body = await parseJsonSafe(res);
+    throw new ApiRequestError('신청 목록 조회 실패', res.status, body);
+  }
+  const json = (await res.json()) as { applications: AdminApplicationItem[] };
+  return json.applications;
+}
+
+export async function createAdminApplication(body: {
+  userId: string;
+  name: string;
+  phone: string;
+}): Promise<{ applicationId: number; stats: AdminStats }> {
+  const res = await fetch('/api/admin/applications', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = (await parseJsonSafe(res)) as {
+    applicationId?: number;
+    stats?: AdminStats;
+    reason?: string;
+    details?: Record<string, string[] | undefined>;
+  };
+
+  if (!res.ok) {
+    throw new ApiRequestError(data.reason ?? '신청 등록 실패', res.status, data);
+  }
+
+  return {
+    applicationId: data.applicationId!,
+    stats: data.stats!,
+  };
+}
+
+export async function clearAllApplications(): Promise<AdminStats> {
+  const res = await fetch('/api/admin/clear', { method: 'POST' });
+  if (!res.ok) {
+    const body = await parseJsonSafe(res);
+    throw new ApiRequestError('DB 비우기 실패', res.status, body);
+  }
+  const json = (await res.json()) as { stats: AdminStats };
+  return json.stats;
 }
 
 export async function resetEnvironment(): Promise<AdminStats> {
   const res = await fetch('/api/admin/reset', { method: 'POST' });
-  if (!res.ok) throw new Error('초기화 실패');
+  if (!res.ok) {
+    const body = await parseJsonSafe(res);
+    throw new ApiRequestError('초기화 실패', res.status, body);
+  }
   const json = (await res.json()) as { stats: AdminStats };
   return json.stats;
 }
@@ -61,8 +168,11 @@ export async function seedData(count: number): Promise<AdminStats> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ count }),
   });
-  if (!res.ok) throw new Error('시드 실패');
-  const json = (await res.json()) as { stats: AdminStats };
+  if (!res.ok) {
+    const body = await parseJsonSafe(res);
+    throw new ApiRequestError('시드 실패', res.status, body);
+  }
+  const json = (await res.json()) as { stats: AdminStats; message?: string };
   return json.stats;
 }
 
@@ -72,11 +182,19 @@ export async function requestExport(requestedBy: string): Promise<ExportJobRespo
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ programId: 1, requestedBy }),
   });
-  return res.json() as Promise<ExportJobResponse>;
+  if (!res.ok && res.status !== 202) {
+    const body = await parseJsonSafe(res);
+    throw new ApiRequestError('Export 요청 실패', res.status, body);
+  }
+  return (await parseJsonSafe(res)) as ExportJobResponse;
 }
 
 export async function getExportStatus(jobId: string): Promise<ExportJobResponse> {
   const res = await fetch(`/api/export/${jobId}`);
+  if (!res.ok) {
+    const body = await parseJsonSafe(res);
+    throw new ApiRequestError('상태 조회 실패', res.status, body);
+  }
   return res.json() as Promise<ExportJobResponse>;
 }
 

@@ -1,10 +1,20 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ApiMode,
+  ApiRequestError,
   applySubsidy,
+  AdminStats,
   BurstResult,
+  fetchAdminStats,
   runBurstSimulation,
 } from '../api';
+import FeedbackAlert from '../components/FeedbackAlert';
+import {
+  mapApplyFailure,
+  mapNetworkError,
+  mapSuccess,
+  UserMessage,
+} from '../errors';
 
 function randomUserId() {
   return `user-${crypto.randomUUID().slice(0, 8)}`;
@@ -20,8 +30,9 @@ export default function UserPage() {
   const [phone, setPhone] = useState(randomPhone());
   const [mode, setMode] = useState<ApiMode>('good');
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [messageType, setMessageType] = useState<'ok' | 'err' | 'info'>('info');
+  const [feedback, setFeedback] = useState<UserMessage | null>(null);
+  const [stats, setStats] = useState<AdminStats | null>(null);
+  const [statsError, setStatsError] = useState<UserMessage | null>(null);
 
   const [burstCount, setBurstCount] = useState(100);
   const [burstMode, setBurstMode] = useState<ApiMode>('good');
@@ -33,23 +44,66 @@ export default function UserPage() {
     bad: BurstResult;
   } | null>(null);
 
+  const refreshStats = useCallback(async () => {
+    try {
+      const data = await fetchAdminStats();
+      setStats(data);
+      setStatsError(null);
+    } catch (error) {
+      setStats(null);
+      setStatsError(
+        error instanceof ApiRequestError && error.status === 0
+          ? mapNetworkError(error)
+          : {
+              title: '현황 조회 실패',
+              message: '잔여 쿼터를 불러올 수 없습니다.',
+              hint: 'API 서버(npm run dev:api)가 실행 중인지 확인하세요.',
+              type: 'err',
+            },
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshStats();
+    const timer = setInterval(() => void refreshStats(), 5000);
+    return () => clearInterval(timer);
+  }, [refreshStats]);
+
+  const isSoldOut =
+    stats != null &&
+    stats.program.remainingQuota <= 0 &&
+    stats.redisQuota <= 0;
+
   async function handleApply(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
-    setMessage(null);
+    setFeedback(null);
+
+    if (isSoldOut) {
+      setFeedback(mapApplyFailure('QUOTA_EXHAUSTED', 409));
+      setLoading(false);
+      return;
+    }
+
     try {
       const { status, data } = await applySubsidy(mode, { userId, name, phone });
-      if (status === 201) {
-        setMessageType('ok');
-        setMessage(`선착순 신청 성공! 신청번호: ${data.applicationId}`);
+
+      if (status === 201 && data.status === 'success') {
+        setFeedback(mapSuccess(data.applicationId));
         setUserId(randomUserId());
+        void refreshStats();
       } else {
-        setMessageType('err');
-        setMessage(`신청 실패: ${data.reason ?? 'UNKNOWN'}`);
+        setFeedback(
+          mapApplyFailure(data.reason, status, data.details),
+        );
       }
-    } catch {
-      setMessageType('err');
-      setMessage('서버 연결 실패. API 서버가 실행 중인지 확인하세요.');
+    } catch (error) {
+      setFeedback(
+        error instanceof ApiRequestError && error.status === 0
+          ? mapNetworkError(error)
+          : mapNetworkError(error),
+      );
     } finally {
       setLoading(false);
     }
@@ -59,14 +113,25 @@ export default function UserPage() {
     setBurstRunning(true);
     setBurstResult(null);
     setBurstProgress(0);
+    setFeedback(null);
     try {
       const result = await runBurstSimulation(burstMode, burstCount, (done, total) => {
         setBurstProgress(Math.round((done / total) * 100));
       });
       setBurstResult(result);
-    } catch {
-      setMessageType('err');
-      setMessage('부하 시뮬레이션 실패');
+      void refreshStats();
+
+      if (result.success === 0 && result.quotaExhausted > 0) {
+        setFeedback(mapApplyFailure('QUOTA_EXHAUSTED', 409));
+      } else {
+        setFeedback({
+          title: '시뮬레이션 완료',
+          message: `성공 ${result.success}건 · 마감 ${result.quotaExhausted}건 · 과부하 ${result.tooBusy}건 · 오류 ${result.errors}건`,
+          type: 'info',
+        });
+      }
+    } catch (error) {
+      setFeedback(mapNetworkError(error));
     } finally {
       setBurstRunning(false);
     }
@@ -75,16 +140,28 @@ export default function UserPage() {
   async function handleCompare() {
     setBurstRunning(true);
     setCompareResult(null);
-    setMessage('Good API 테스트 중...');
+    setFeedback({
+      title: '비교 테스트 진행 중',
+      message: 'Good API 테스트 중...',
+      type: 'info',
+    });
     try {
       const good = await runBurstSimulation('good', burstCount);
-      setMessage('Bad API 테스트 중...');
+      setFeedback({
+        title: '비교 테스트 진행 중',
+        message: 'Bad API 테스트 중...',
+        type: 'info',
+      });
       const bad = await runBurstSimulation('bad', burstCount);
       setCompareResult({ good, bad });
-      setMessage(null);
-    } catch {
-      setMessageType('err');
-      setMessage('비교 테스트 실패');
+      setFeedback({
+        title: '비교 완료',
+        message: `Good 성공 ${good.success}건 / Bad 성공 ${bad.success}건 — Bad가 더 많거나 오류가 크면 race condition 신호입니다.`,
+        type: 'info',
+      });
+      void refreshStats();
+    } catch (error) {
+      setFeedback(mapNetworkError(error));
     } finally {
       setBurstRunning(false);
     }
@@ -96,6 +173,24 @@ export default function UserPage() {
         <h1>대국민 금융 지원금 신청</h1>
         <p>선착순 10,000명 한정 · Redis 기반 고속 처리</p>
       </section>
+
+      {statsError && <FeedbackAlert feedback={statsError} />}
+
+      {stats && (
+        <div className={`quota-banner ${isSoldOut ? 'sold-out' : ''}`}>
+          <div>
+            <strong>잔여 지원금</strong>
+            <span className="quota-numbers">
+              DB {stats.program.remainingQuota.toLocaleString()} / Redis{' '}
+              {stats.redisQuota.toLocaleString()} (총{' '}
+              {stats.program.totalQuota.toLocaleString()}명)
+            </span>
+          </div>
+          {isSoldOut && (
+            <span className="quota-badge">마감</span>
+          )}
+        </div>
+      )}
 
       <div className="grid-2">
         <section className="card">
@@ -110,7 +205,16 @@ export default function UserPage() {
             </label>
             <label>
               사용자 ID
-              <input value={userId} onChange={(e) => setUserId(e.target.value)} required />
+              <div className="input-row">
+                <input value={userId} onChange={(e) => setUserId(e.target.value)} required />
+                <button
+                  type="button"
+                  className="btn outline small"
+                  onClick={() => setUserId(randomUserId())}
+                >
+                  새 ID
+                </button>
+              </div>
             </label>
             <label>
               이름
@@ -127,14 +231,20 @@ export default function UserPage() {
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 placeholder="01012345678"
+                pattern="[0-9-]{10,20}"
+                title="010으로 시작하는 10~20자리 숫자"
                 required
               />
             </label>
-            <button type="submit" className="btn primary" disabled={loading}>
-              {loading ? '신청 중...' : '신청하기'}
+            <button
+              type="submit"
+              className="btn primary"
+              disabled={loading || isSoldOut}
+            >
+              {loading ? '신청 중...' : isSoldOut ? '마감됨' : '신청하기'}
             </button>
           </form>
-          {message && <div className={`alert ${messageType}`}>{message}</div>}
+          <FeedbackAlert feedback={feedback} onClose={() => setFeedback(null)} />
         </section>
 
         <section className="card">
@@ -195,6 +305,7 @@ export default function UserPage() {
               <Stat label="성공" value={burstResult.success} accent="green" />
               <Stat label="마감" value={burstResult.quotaExhausted} accent="orange" />
               <Stat label="과부하" value={burstResult.tooBusy} />
+              <Stat label="중복" value={burstResult.alreadyApplied} />
               <Stat label="오류" value={burstResult.errors} accent="red" />
               <Stat label="소요(ms)" value={burstResult.durationMs} />
             </div>
@@ -221,6 +332,11 @@ export default function UserPage() {
                     <td>마감</td>
                     <td>{compareResult.good.quotaExhausted}</td>
                     <td>{compareResult.bad.quotaExhausted}</td>
+                  </tr>
+                  <tr>
+                    <td>과부하</td>
+                    <td>{compareResult.good.tooBusy}</td>
+                    <td>{compareResult.bad.tooBusy}</td>
                   </tr>
                   <tr>
                     <td>오류</td>
