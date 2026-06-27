@@ -9,7 +9,7 @@ services:
       MYSQL_ROOT_PASSWORD: secret
       MYSQL_DATABASE: subsidy_db
     ports:
-      - "3306:3306"
+      - "3307:3306"   # 로컬 MySQL(3306)과 충돌 방지
     volumes:
       - mysql_data:/var/lib/mysql
     command: --default-authentication-plugin=mysql_native_password

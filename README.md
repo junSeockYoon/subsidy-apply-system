@@ -37,10 +37,141 @@ Node.js 기반 고트래픽 선착순 처리 + 대용량 엑셀 스트리밍 다
 | Step | 내용 | 상태 |
 |------|------|------|
 | **Step 1** | 디렉터리 구조 + 패키지 + 인프라 설정 | ✅ 완료 |
-| **Step 2** | Express 보일러플레이트 + MySQL/Redis 연결 | ⏳ 대기 |
+| **Step 2** | Express 보일러플레이트 + MySQL/Redis 연결 | ✅ 완료 |
 | **Step 3** | Flow 1 — 선착순 API (good/bad 비교) | ⏳ 대기 |
 | **Step 4** | Flow 2 — BullMQ + 엑셀 스트리밍 워커 | ⏳ 대기 |
 | **Step 5** | k6 부하 테스트 스크립트 | ⏳ 대기 |
+
+---
+
+## 처음 시작하기 — Docker로 MySQL·Redis 띄우기 (초보자용)
+
+> **결론부터:** DB를 직접 만들 필요 없습니다. `docker compose up -d` 한 줄이면 MySQL·Redis·DB 생성까지 끝납니다.
+
+### Docker가 하는 일 (비유)
+
+| 개념 | 비유 |
+|------|------|
+| **Docker** | 가상의 작은 컴퓨터를 통째로 띄우는 도구 |
+| **이미지(image)** | 그 컴퓨터에 미리 설치된 OS+프로그램 스냅샷 (예: `mysql:8.0`) |
+| **컨테이너(container)** | 실제로 실행 중인 인스턴스 |
+| **docker-compose.yml** | MySQL + Redis를 한 번에 띄우는 설치 스크립트 |
+
+우리 프로젝트의 `docker-compose.yml`이 아래를 **자동으로** 해줍니다.
+
+- MySQL 8 설치 및 실행
+- `subsidy_db` 데이터베이스 생성
+- `root` / `secret` 계정 생성
+- Redis 7 설치 및 실행
+
+### Step-by-Step 실행 가이드
+
+#### ① Docker Desktop 실행
+
+Mac 상단 메뉴바에 고래 아이콘이 보여야 합니다. 없으면 **Docker Desktop** 앱을 실행하세요.
+
+```bash
+docker -v
+# Docker version 27.x.x ... ← 나오면 OK
+```
+
+`Cannot connect to the Docker daemon` 오류가 나면 → Docker Desktop이 꺼져 있는 것입니다.
+
+#### ② 프로젝트 폴더로 이동
+
+```bash
+cd subsidy-apply-system
+```
+
+#### ③ 환경변수 파일 확인
+
+```bash
+cp .env.example .env   # 이미 있으면 생략
+```
+
+`.env`의 DB/Redis 값은 docker-compose 기본값과 일치합니다. **수정할 필요 없습니다.**
+
+#### ④ MySQL + Redis 컨테이너 실행
+
+```bash
+docker compose up -d
+```
+
+| 옵션 | 의미 |
+|------|------|
+| `up` | 컨테이너 생성 + 시작 |
+| `-d` | 백그라운드(detached) 실행 — 터미널이 안 막힘 |
+
+처음 실행 시 이미지 다운로드로 1~3분 걸릴 수 있습니다.
+
+#### ⑤ 실행 확인
+
+```bash
+docker compose ps
+```
+
+| NAME | STATUS |
+|------|--------|
+| subsidy-mysql | running |
+| subsidy-redis | running |
+
+#### ⑥ (선택) MySQL·Redis 직접 확인
+
+```bash
+# MySQL — subsidy_db가 보이면 성공
+docker exec -it subsidy-mysql mysql -uroot -psecret -e "SHOW DATABASES;"
+
+# Redis — PONG이 나오면 성공
+docker exec -it subsidy-redis redis-cli ping
+```
+
+#### ⑦ API 서버 실행
+
+```bash
+npm install          # 최초 1회
+npm run dev:api
+```
+
+#### ⑧ 헬스체크
+
+```bash
+curl http://localhost:3000/health
+```
+
+성공 응답 예시:
+
+```json
+{
+  "status": "ok",
+  "mysql": "connected",
+  "redis": "connected",
+  "timestamp": "2026-06-27T..."
+}
+```
+
+### 자주 쓰는 Docker 명령어
+
+```bash
+docker compose up -d      # 시작
+docker compose ps         # 상태 확인
+docker compose logs mysql # MySQL 로그 보기
+docker compose stop       # 중지 (데이터 유지)
+docker compose down       # 중지 + 컨테이너 삭제 (데이터는 volume에 유지)
+docker compose down -v    # ⚠️ 데이터까지 전부 삭제 (초기화할 때만)
+```
+
+### 사용자가 전달해야 하는 것
+
+| 필요 여부 | 항목 |
+|-----------|------|
+| ❌ 불필요 | MySQL 직접 설치 |
+| ❌ 불필요 | DB 수동 생성 (`CREATE DATABASE ...`) |
+| ❌ 불필요 | Redis 설치·설정 |
+| ❌ 불필요 | 테이블 DDL 직접 작성 |
+| ✅ 필요 | Docker Desktop 실행 |
+| ✅ 필요 | `.env` 파일 (`cp .env.example .env`) |
+
+서버가 처음 뜰 때 Sequelize가 테이블을 자동 생성하고, 기본 지원금 프로그램(1만 건)도 자동 등록됩니다.
 
 ---
 
@@ -142,7 +273,7 @@ docker compose ps
 
 ---
 
-## Step 2 — Express + DB/Redis 연결 (다음 단계) ⏳
+## Step 2 — Express + DB/Redis 연결 ✅
 
 ### 목표
 
@@ -152,18 +283,47 @@ docker compose ps
 - pino 구조화 로거 설정
 - 환경변수 zod 검증
 
-### 구현 예정 파일
+### 구현한 파일
 
-| 파일 | 내용 |
-|------|------|
-| `src/config/index.ts` | zod로 `.env` 검증 |
-| `src/config/database.ts` | Sequelize + 커넥션 풀 |
-| `src/config/redis.ts` | ioredis 싱글톤 |
-| `src/models/Application.ts` | 신청 내역 테이블 |
-| `src/models/SubsidyProgram.ts` | 지원금 프로그램 테이블 |
-| `src/api/app.ts` | Express 앱 (helmet, cors, pino-http) |
-| `src/api/server.ts` | listen + graceful shutdown |
-| `src/lib/logger.ts` | pino 로거 |
+| 파일 | 내용 | 성능 포인트 |
+|------|------|-------------|
+| `src/config/index.ts` | zod로 `.env` 검증 | 잘못된 설정으로 DB 타임아웃 대기 방지 |
+| `src/config/database.ts` | Sequelize + 커넥션 풀 | TCP 연결 재사용 (`pool.max`) |
+| `src/config/redis.ts` | ioredis 싱글톤 | 프로세스당 Redis 연결 1개 유지 |
+| `src/models/SubsidyProgram.ts` | 지원금 프로그램 | 잔여 수량 관리 |
+| `src/models/Application.ts` | 신청 내역 | `(program_id, user_id)` 유니크 인덱스 |
+| `src/api/app.ts` | Express 앱 | helmet, pino-http, json 1mb 제한 |
+| `src/api/server.ts` | listen + graceful shutdown | SIGTERM 시 커넥션 정리 |
+| `src/lib/logger.ts` | pino 로거 | 고트래픽 저비용 로깅 |
+
+### 자동으로 일어나는 일 (서버 첫 실행 시)
+
+1. MySQL 연결 (`sequelize.authenticate`)
+2. Redis 연결 (`ping`)
+3. 테이블 자동 생성 (`subsidy_programs`, `applications`)
+4. 기본 지원금 프로그램 등록 (쿼터 10,000건)
+5. `GET /health` 엔드포인트 활성화
+
+### 실행 확인
+
+```bash
+npm run dev:api
+curl http://localhost:3000/health
+```
+
+성공 응답:
+
+```json
+{ "status": "ok", "mysql": "connected", "redis": "connected" }
+```
+
+### 자주 겪는 오류 (트러블슈팅)
+
+| 오류 | 원인 | 해결 |
+|------|------|------|
+| `Access denied for user 'root'@'localhost'` | `.env`는 Docker 비밀번호(`secret`)인데 로컬 MySQL(3306)에 연결됨 | `DB_PORT=3307`, `docker compose up -d mysql` |
+| `subsidy-mysql`이 `ps`에 없음 | 3306 포트 충돌로 MySQL 컨테이너 미기동 | 위와 동일 (3307 사용) |
+| `EADDRINUSE :::3000` | API 서버가 이미 실행 중 | `curl localhost:3000/health` 확인 또는 `lsof -ti :3000 \| xargs kill` |
 
 ---
 
@@ -224,7 +384,7 @@ docker compose up -d
 | 항목 | docker-compose 기본값 |
 |------|----------------------|
 | DB 호스트 | `localhost` |
-| DB 포트 | `3306` |
+| DB 포트 | `3307` (로컬 MySQL 3306과 충돌 방지) |
 | DB 이름 | `subsidy_db` |
 | DB 사용자 | `root` |
 | DB 비밀번호 | `secret` |
@@ -245,7 +405,7 @@ DB_USER=
 DB_PASSWORD=
 ```
 
-로컬에 이미 MySQL이 3306 포트를 쓰고 있다면, docker-compose의 MySQL 포트를 바꾸거나 기존 MySQL을 사용하면 됩니다.
+로컬에 이미 MySQL이 3306 포트를 쓰고 있다면, 이 프로젝트는 Docker MySQL을 **3307**로 매핑해 둡니다. `.env`의 `DB_PORT=3307`과 맞춰져 있습니다.
 
 ### 선택 (있으면 좋음, 없어도 Step 2 진행 가능)
 

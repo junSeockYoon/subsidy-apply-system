@@ -1,1 +1,19 @@
-// Step 2에서 구현 예정: Sequelize 모델 통합 export
+import { Application } from './Application';
+import { SubsidyProgram } from './SubsidyProgram';
+
+SubsidyProgram.hasMany(Application, {
+  foreignKey: 'programId',
+  as: 'applications',
+});
+
+Application.belongsTo(SubsidyProgram, {
+  foreignKey: 'programId',
+  as: 'program',
+});
+
+export { Application, SubsidyProgram };
+
+export async function syncModels(): Promise<void> {
+  await SubsidyProgram.sync();
+  await Application.sync();
+}
