@@ -38,7 +38,7 @@ Node.js 기반 고트래픽 선착순 처리 + 대용량 엑셀 스트리밍 다
 |------|------|------|
 | **Step 1** | 디렉터리 구조 + 패키지 + 인프라 설정 | ✅ 완료 |
 | **Step 2** | Express 보일러플레이트 + MySQL/Redis 연결 | ✅ 완료 |
-| **Step 3** | Flow 1 — 선착순 API (good/bad 비교) | ⏳ 대기 |
+| **Step 3** | Flow 1 — 선착순 API (good/bad 비교) | ✅ 완료 |
 | **Step 4** | Flow 2 — BullMQ + 엑셀 스트리밍 워커 | ⏳ 대기 |
 | **Step 5** | k6 부하 테스트 스크립트 | ⏳ 대기 |
 
@@ -327,13 +327,109 @@ curl http://localhost:3000/health
 
 ---
 
-## Step 3 — 선착순 API (Flow 1) ⏳
+## Step 3 — 선착순 API (Flow 1) ✅
 
 ### 목표
 
-- `POST /api/apply/good` — Redis 대기열 + Redlock (권장)
-- `POST /api/apply/bad` — DB 직행 (성능 비교용)
-- 10만 동시 요청 시 1만 건 정확한 선착순 보장
+- `POST /api/apply/good` — Redis + Redlock 선착순 (권장)
+- `POST /api/apply/bad` — DB 직행 (성능 비교용 안티패턴)
+- 10만 동시 요청 시 1만 건 정확한 선착순 보장 (Step 5 k6로 검증 예정)
+
+### 비즈니스 규칙
+
+| 규칙 | 설명 |
+|------|------|
+| 총 쿼터 | 10,000건 (`SUBSIDY_TOTAL_QUOTA`) |
+| 중복 신청 | 동일 `userId`는 1회만 허용 |
+| 마감 처리 | 잔여 0건 이후 신청은 `QUOTA_EXHAUSTED` |
+
+### API 스펙
+
+**요청**
+
+```bash
+POST /api/apply/good   # 또는 /api/apply/bad
+Content-Type: application/json
+
+{
+  "userId": "user-001",
+  "name": "홍길동",
+  "phone": "01012345678"
+}
+```
+
+**응답**
+
+| 상황 | HTTP | body |
+|------|------|------|
+| 선착순 성공 | 201 | `{ "status": "success", "applicationId": 1 }` |
+| 마감 | 409 | `{ "status": "failed", "reason": "QUOTA_EXHAUSTED" }` |
+| 중복 신청 | 409 | `{ "status": "failed", "reason": "ALREADY_APPLIED" }` |
+| 과부하 (good만) | 503 | `{ "status": "failed", "reason": "TOO_BUSY" }` |
+| 입력 오류 | 400 | `{ "status": "failed", "reason": "VALIDATION_ERROR" }` |
+
+### Good vs Bad 아키텍처 비교
+
+```
+[Bad API — DB 직행]
+요청 → MySQL SELECT (잔여 확인) → INSERT → UPDATE
+       ↑ race condition 구간 — 동시 요청 시 1만 건 초과 가능
+
+[Good API — Redis + Redlock]
+요청 → 동시처리 슬롯(50) → Redis 잔여량 fast-fail → Redis 중복 검사
+     → Redlock → DECR 차감 → SET NX 중복 마킹 → MySQL INSERT
+```
+
+### 구현한 파일
+
+| 파일 | 내용 | 성능·정합성 포인트 |
+|------|------|-------------------|
+| `src/lib/redis/queue.ts` | 잔여량 DECR, 중복 SET NX, 세마포어, 대기열 | DB 도달 전 μs 단위 거절·중복 차단 |
+| `src/lib/redis/redlock.ts` | Redlock 분산 락 | 차감~INSERT 구간 race condition 방어 |
+| `src/lib/redis/client.ts` | Redis 클라이언트 re-export | 커넥션 공유 |
+| `src/services/apply/apply.good.service.ts` | Good 비즈니스 로직 | Redis 핫패스 + DB 영속화만 |
+| `src/services/apply/apply.bad.service.ts` | Bad 비즈니스 로직 | 의도적 안티패턴 (k6 비교용) |
+| `src/services/apply/types.ts` | 공통 타입 | — |
+| `src/api/routes/apply.routes.ts` | 라우팅 + zod 검증 | 잘못된 요청 조기 차단 |
+| `src/api/server.ts` | Redis 잔여량 초기화 (`initSubsidyRedis`) | 기동 시 `SET NX`로 카운터 준비 |
+
+### Redis 키 구조
+
+| 키 | 용도 |
+|----|------|
+| `subsidy:quota:{programId}` | 잔여 수량 (DECR 원자 연산) |
+| `subsidy:applied:{programId}:{userId}` | 중복 신청 방지 (SET NX) |
+| `subsidy:concurrent:{programId}` | 동시 DB 진입 제한 (세마포어, 최대 50) |
+| `subsidy:queue:{programId}` | 요청 대기열 (LPUSH) |
+| `subsidy:lock:{programId}` | Redlock 리소스 |
+
+### 실행 확인
+
+```bash
+# Good — 성공
+curl -X POST http://localhost:3000/api/apply/good \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"user-001","name":"홍길동","phone":"01012345678"}'
+
+# Good — 중복 (409)
+curl -X POST http://localhost:3000/api/apply/good \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"user-001","name":"홍길동","phone":"01012345678"}'
+
+# Bad — 비교용
+curl -X POST http://localhost:3000/api/apply/bad \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"user-002","name":"김철수","phone":"01099998888"}'
+```
+
+### 데이터 초기화 (테스트 리셋)
+
+```bash
+# Redis + MySQL 데이터 초기화 후 재시작
+docker compose down -v
+docker compose up -d
+npm run dev:api
+```
 
 ---
 

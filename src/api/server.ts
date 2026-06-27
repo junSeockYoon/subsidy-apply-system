@@ -3,6 +3,7 @@ import { config } from '../config';
 import { connectDatabase, closeDatabase } from '../config/database';
 import { connectRedis, closeRedis } from '../config/redis';
 import { SubsidyProgram, syncModels } from '../models';
+import { initSubsidyRedis } from '../lib/redis/queue';
 import { logger } from '../lib/logger';
 
 async function ensureDefaultProgram(): Promise<void> {
@@ -19,6 +20,8 @@ async function ensureDefaultProgram(): Promise<void> {
     { programId: program.id, remainingQuota: program.remainingQuota },
     'Subsidy program ready',
   );
+
+  await initSubsidyRedis(program.id, program.remainingQuota);
 }
 
 async function bootstrap(): Promise<void> {
