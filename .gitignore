@@ -10,3 +10,4 @@ scripts/k6/results/*.json
 *.log
 .DS_Store
 coverage/
+docs/PORTFOLIO.md
